@@ -82,12 +82,12 @@ test("Groq stop uploads one WAV including final worklet tail, and all finish wai
 	await f.dictation.finish(); assert.equal(f.state.uploads.length, 1); assert.equal(f.state.tokens, 0);
 });
 
-test("failed Groq transcription rejects finish and preserves the existing draft without provider retry", async () => {
+test("failed Groq transcription rejects the current finish but leaves a later manual submission usable", async () => {
 	const f = await fixture(); f.state.fail = true;
 	await act(async () => { f.dictation.toggle(); }); await act(async () => { f.worklet.audio(frame()); });
 	await act(async () => { await assert.rejects(f.dictation.finish(), /Groq transcription unavailable/); });
 	assert.deepEqual(f.state.appends, []); assert.match(f.dictation.error!, /unavailable/); assert.equal(f.state.tokens, 0);
-	await assert.rejects(f.dictation.finish(), /unavailable/);
+	await f.dictation.finish(); // A deliberate later manual send may use the retained draft.
 });
 
 for (const action of ["cancel", "unmount"] as const) test(`${action} during upload aborts finish and ignores late transcription`, async () => {
@@ -115,6 +115,7 @@ test("config gates microphone capture, cancellation fences late settings, and sa
 	await act(async () => { f.dictation.cancel(); config.resolve(Response.json({ provider: "groq" })); }); assert.equal(f.state.captures, 0);
 	f.state.config = undefined; f.state.provider = null;
 	await act(async () => { f.dictation.toggle(); }); assert.equal(f.dictation.error, DICTATION_KEYLESS); assert.equal(f.state.captures, 0);
+	await f.dictation.finish(); // Missing credentials must not block ordinary manual chat.
 	f.state.provider = "groq"; await act(async () => { notifySettingsSaved("keys"); f.dictation.toggle(); });
 	assert.equal(f.state.captures, 1); assert.equal(f.state.tokens, 0);
 });

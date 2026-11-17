@@ -434,6 +434,10 @@ export function useDictation({ append, destination = "primary", disabled = false
 	const cleanup = useCallback((warmNext = true, terminalError?: unknown) => {
 		const endGen = ++genRef.current;
 		let appended: unknown;
+		// A failed capture/transcription rejects this submission attempt, but a
+		// later explicit manual submission must remain usable. Only failed or
+		// canceled transcript delivery keeps the existing idle finish gate.
+		let keepIdleFailure = appendPendingRef.current;
 		// A second cleanup (cancel/dispose) cannot turn an unfinished async
 		// append into a successful finish: that would send the old draft.
 		let failure: { error: unknown } | null = terminalError !== undefined ? { error: terminalError }
@@ -452,6 +456,7 @@ export function useDictation({ append, destination = "primary", disabled = false
 			appended = flush(); // exactly one append, after the final transcript
 		} catch (error) {
 			failure = { error };
+			keepIdleFailure = true;
 		}
 		if (safetyRef.current) {
 			clearTimeout(safetyRef.current);
@@ -472,10 +477,10 @@ export function useDictation({ append, destination = "primary", disabled = false
 				ws.close();
 			} catch {}
 		}
-		const complete = (failed: { error: unknown } | null) => {
+		const complete = (failed: { error: unknown } | null, retainFailure = false) => {
 			if (endGen !== genRef.current) return;
 			appendPendingRef.current = false;
-			appendFailureRef.current = failed;
+			appendFailureRef.current = retainFailure ? failed : null;
 			if (failed) setError(failed.error instanceof Error ? failed.error.message : "Dictation transcript could not be applied");
 			if (recordingOwner === owner) {
 				recordingOwner = null;
@@ -495,8 +500,8 @@ export function useDictation({ append, destination = "primary", disabled = false
 			appendPendingRef.current = true;
 			setPhase("stopping");
 			// Both branches consume the promise, including stop-without-finish.
-			void Promise.resolve(appended).then(() => complete(null), (error: unknown) => complete({ error }));
-		} else complete(failure);
+			void Promise.resolve(appended).then(() => complete(failure, keepIdleFailure), (error: unknown) => complete({ error }, true));
+		} else complete(failure, keepIdleFailure);
 	}, [flush, owner, setPhase]);
 
 	/** Open the Deepgram socket and wire its messages. `gen` guards staleness. */
