@@ -2,6 +2,7 @@ import type { Agent, AgentEvent, AgentMessage } from "@earendil-works/pi-agent-c
 import { ToolCallIdUniquifier } from "./call-ids.ts";
 import type { ChatGPTRequestCycle } from "../../agent/chatgpt-request-cycle.ts";
 import { pluginQuestionLedgerFor } from "../../agent/plugin-question-tools.ts";
+import { browserTurnEvent } from "../browser-messages.ts";
 
 /**
  * THE NATIVE WIRE (Wave D, owner-approved 2026-09-26): one agent turn, streamed
@@ -318,7 +319,7 @@ export function runPiTurn(spec: PiTurnSpec): PiTurnHandle {
 						push(event) {
 							if (closed) return;
 							try {
-								controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+								controller.enqueue(encoder.encode(`data: ${JSON.stringify(browserTurnEvent(event))}\n\n`));
 							} catch {
 								/* reader cancelled — stop emitting, keep running */
 								closed = true;

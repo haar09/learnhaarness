@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { Chat } from "@/components/chat";
 import { slotsConfigured } from "@/src/core";
-import { compactionInFlight, getChat, isTurnRunning, readSettingsRecord, turnFailure } from "@/src/server";
+import { browserMessages, compactionInFlight, getChat, isTurnRunning, readSettingsRecord, turnFailure } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
@@ -25,10 +25,9 @@ export default async function ChatPage({
 			chatId={chat.id}
 			title={chat.title}
 			kind={chat.kind ?? "teach"}
-			// Wave D: the record IS native agent history — the client view is
-				// derived app-side (core/view.ts projectView; GET serves the same
-				// native messages).
-				initialMessages={chat.messages}
+			// Browser projection preserves the transcript without embedding
+			// model-only Vulpin page image bytes in the React page payload.
+			initialMessages={browserMessages(chat.messages)}
 			initialError={turnFailure(chat.id)}
 			initialConfigured={slotsConfigured(record?.models)}
 			initialPrompt={prompt}

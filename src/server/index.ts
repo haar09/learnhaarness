@@ -71,3 +71,4 @@ export { updateStatus } from "./update-status.ts";
 export { accountPasswordResponse } from "./account-password.ts";
 export { loginResponse, verifySessionResponse, logoutResponse, sessionInfoResponse } from "./session-auth.ts";
 export { sttConfig, transcribeDictation } from "./stt.ts";
+export { browserMessages } from "./browser-messages.ts";
