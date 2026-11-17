@@ -1,0 +1,11 @@
+*.env
+access.txt
+*.hash
+*credentials*
+*token*
+*.log
+__pycache__/
+*.pyc
+*-state.json
+*-results.json
+*-profile/

@@ -1,0 +1,19 @@
+[Unit]
+Description=LearnHarness ChatGPT browser sign-in helper
+After=learnharness.service
+Requires=learnharness.service
+[Service]
+Type=simple
+User=learnharness
+Group=learnharness
+EnvironmentFile=/etc/learnharness/oauth.env
+ExecStart=/usr/bin/python3 /opt/learnharness/oauth-helper.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+UMask=0077
+[Install]
+WantedBy=multi-user.target
