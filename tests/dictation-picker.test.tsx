@@ -225,34 +225,35 @@ test("capture locks the row and dismisses an open language menu until capture en
 
 for (const source of ["none", "file", "env"] as const) test(`Language is below the full key row for ${source}-owned keys, including editing`, async () => {
 	const f = await fixture();
-	f.state.keys = [{
-		id: "DEEPGRAM_API_KEY", info: AUTH_KEYS.find((key) => key.id === "DEEPGRAM_API_KEY")!,
+	f.state.keys = ["GROQ_API_KEY", "DEEPGRAM_API_KEY"].map(id => ({
+		id, info: AUTH_KEYS.find((key) => key.id === id)!,
 		present: source !== "none", masked: source === "none" ? null : "…test (32 chars)",
 		source, shadowedByEnv: false,
-	}];
+	}));
 	const { KeysSection } = await import("../components/settings/keys-section.tsx");
 	await f.render(<KeysSection />);
 	const group = byTest("group-dictation");
 	const rows = group.lastElementChild!.children;
-	assert.equal(rows[0]!.getAttribute("data-testid"), "key-deepgram_api_key");
-	assert.equal(rows[1]!.getAttribute("data-testid"), "row-dictation-language");
-	assert.equal(rows[2]!.getAttribute("data-testid"), "dictation-setup-hint");
-	assert.equal(byTest("dictation-setup-hint").textContent, "Create a Deepgram API key with the Member role or higher, then add it above.");
+	assert.equal(rows[0]!.getAttribute("data-testid"), "key-groq_api_key");
+	assert.equal(rows[1]!.getAttribute("data-testid"), "key-deepgram_api_key");
+	assert.equal(rows[2]!.getAttribute("data-testid"), "row-dictation-language");
+	assert.equal(rows[3]!.getAttribute("data-testid"), "dictation-setup-hint");
+	assert.equal(byTest("dictation-setup-hint").textContent, "Create a Groq API key and add it above. Groq uses Whisper Large V3 Turbo and transcribes when you stop (up to 10 minutes per recording). With no Groq key, Deepgram provides live transcription; its key needs the Member role or higher.");
 	assert.match(byTest("dictation-setup-hint").className, /text-muted-foreground/);
-	assert.equal(byTest("dictation-setup-hint").querySelector("a")!.href, "https://console.deepgram.com/");
-	assert.equal(byTest("dictation-setup-hint").querySelector("a")!.textContent, "Deepgram API key");
+	assert.equal(byTest("dictation-setup-hint").querySelector("a")!.href, "https://console.groq.com/keys");
+	assert.equal(byTest("dictation-setup-hint").querySelector("a")!.textContent, "Groq API key");
 	assert.equal(byTest("dictation-setup-hint").querySelectorAll("a").length, 1);
-	assert.match(rows[1]!.querySelector(".font-prose")!.className, /text-\(length:--lh-prose-size\)/);
+	assert.match(rows[2]!.querySelector(".font-prose")!.className, /text-\(length:--lh-prose-size\)/);
 	assert.equal(trigger().disabled, false, "language is independent of key ownership");
-	await click(byTest("key-deepgram_api_key-row"));
-	if (source !== "env") assert.ok(byTest("key-deepgram_api_key-editor"));
+	await click(byTest("key-groq_api_key-row"));
+	if (source !== "env") assert.ok(byTest("key-groq_api_key-editor"));
 	assert.ok(byTest("dictation-setup-hint"), "guidance remains visible while the key is edited");
 	await click(trigger());
 	assert(menu());
 	await key(input(), "Escape");
 	assert.equal(menu(), null);
 	assert.equal(f.state.outerEscapes, 0);
-	if (source !== "env") assert.ok(byTest("key-deepgram_api_key-editor"), "first Escape closes only the menu");
+	if (source !== "env") assert.ok(byTest("key-groq_api_key-editor"), "first Escape closes only the menu");
 });
 
 test("the shared model menu preserves ranking, provider identity, keyboard clamping, and row content", async () => {

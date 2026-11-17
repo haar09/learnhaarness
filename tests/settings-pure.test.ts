@@ -290,17 +290,26 @@ describe("classifyKeys — the Keys section's two-group projection", () => {
 	});
 
 	it("stored provider keys land in providerRows; the Add dropdown drops them", () => {
-		const out = classifyKeys([synth("GROQ_API_KEY", true)], providers);
+		const out = classifyKeys([synth("DEEPSEEK_API_KEY", true)], providers);
 		assert.equal(out.providerRows.length, 1);
-		assert.equal(out.providerRows[0]!.id, "GROQ_API_KEY");
-		// the Add dropdown no longer offers groq
-		assert.ok(!out.addable.some((p) => p.id === "groq"));
-		assert.ok(out.addable.some((p) => p.id === "deepseek"));
+		assert.equal(out.providerRows[0]!.id, "DEEPSEEK_API_KEY");
+		assert.ok(!out.addable.some((p) => p.id === "deepseek"));
+	});
+
+	it("Groq has a single editable home in Dictation, including before a key is saved", () => {
+		for (const statuses of [[], [synth("GROQ_API_KEY", true)]]) {
+			const out = classifyKeys(statuses, providers);
+			assert.equal(out.toolRows.filter((row) => row.id === "GROQ_API_KEY").length, 1);
+			assert.ok(!out.providerRows.some((row) => row.id === "GROQ_API_KEY"));
+			assert.ok(!out.addable.some((provider) => provider.id === "groq"));
+		}
+		assert.equal(classifyKeys([], providers).toolRows[0]?.info?.label, "Groq · Whisper");
 	});
 
 	it("curated tool ids always render (synthesized when absent)", () => {
 		const out = classifyKeys([synth("DEEPGRAM_API_KEY", true)], undefined);
 		assert.deepEqual(out.toolRows.map((r) => r.id), [
+			"GROQ_API_KEY",
 			"DEEPGRAM_API_KEY",
 			"TAVILY_API_KEY",
 			"BRAVE_API_KEY",
@@ -308,8 +317,8 @@ describe("classifyKeys — the Keys section's two-group projection", () => {
 			"FIRECRAWL_API_KEY",
 			"OLLAMA_API_KEY",
 		]);
-		assert.ok(out.toolRows[0]!.present);
-		assert.ok(!out.toolRows[1]!.present);
+		assert.ok(out.toolRows[1]!.present);
+		assert.ok(!out.toolRows[0]!.present);
 	});
 
 	it("unknown file vars surface read-only, out of the provider rows", () => {

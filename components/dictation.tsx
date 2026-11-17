@@ -7,11 +7,16 @@ import { Hint } from "@/components/ui/hint";
 import { deepgramListenUrl, type DictationLanguage } from "@/src/core";
 import { useDictationLanguage } from "@/components/dictation-preference";
 import { setDictationActive } from "@/components/dictation-state";
+import { onSettingsSaved } from "@/components/settings-signal";
+import { createPcmRecording, DICTATION_LIMIT_MESSAGE, DICTATION_MAX_SECONDS, DICTATION_MIN_PCM_BYTES, type PcmChunk } from "@/components/dictation-audio";
 import { dispatchFocusedPluginShortcut } from "@/components/plugin-input-focus";
 export { isDictationActive } from "@/components/dictation-state";
 
 /**
- * Voice dictation — the cloud engine (STT wave 1, 2026-09-17).
+ * Voice dictation — Groq Whisper batch transcription or Deepgram streaming.
+ * /api/stt/config selects the configured provider before microphone capture.
+ * Groq receives one bounded mono PCM WAV upload through the server on stop;
+ * Deepgram retains the existing short-lived token and streaming path below.
  *
  * Architecture (docs/research/stt.md): the renderer captures mic audio in
  * an AudioWorklet (public/worklets/pcm-capture.js → linear16 16kHz mono),
@@ -103,13 +108,14 @@ export const METER_CELLS = 48;
 /** The Deepgram key's id in the keys store (the env-var name — the Keys
  *  section's openRow state and the PUT /api/keys/:id seam). */
 export const DEEPGRAM_KEY_ID = "DEEPGRAM_API_KEY";
+export const GROQ_KEY_ID = "GROQ_API_KEY";
 
 /** The client-authored KEYLESS line (zero-keys wave, owner 2026-09-25):
  * the token route's raw 503 message is dev-speak ("add it to auth.json
  * (desktop) or .env.local (dev)") — the surface says the short truth
  * instead. Exported for pins; the errored idle button's click recognizes
- * it and deep-links Settings → Keys → the Deepgram row. */
-export const DICTATION_KEYLESS = "Dictation needs a Deepgram key";
+ * it and deep-links Settings → Keys → the Groq row. */
+export const DICTATION_KEYLESS = "Dictation needs a Groq or Deepgram key";
 export const DICTATION_ACTIVE_ELSEWHERE = "Dictation is active elsewhere";
 
 // Mounted controllers do not claim capture. Only start() acquires the single
@@ -160,6 +166,15 @@ async function mintFreshToken(): Promise<string> {
 	return data.token;
 }
 
+type DictationProvider = "groq" | "deepgram";
+async function readDictationProvider(signal?: AbortSignal): Promise<DictationProvider | null> {
+	const res = await fetch("/api/stt/config", { signal, cache: "no-store" });
+	if (!res.ok) throw new Error("Could not load dictation configuration. Try again.");
+	const value: unknown = await res.json();
+	if (!value || typeof value !== "object" || !("provider" in value) || !["groq", "deepgram", null].includes(value.provider as string | null)) throw new Error("Invalid dictation configuration");
+	return value.provider as DictationProvider | null;
+}
+
 /** Warm-token cache (mitigation D, owner 2026-09-27): the click path takes
  *  the cached promise instead of a remote mint. TTL keeps a cached token
  *  from going stale (self-heal anyway: a rejected handshake rides the
@@ -197,6 +212,9 @@ export function createWarmMinter(
 }
 
 const warmTokens = createWarmMinter(mintFreshToken);
+function warmConfiguredProvider() {
+	void readDictationProvider().then(provider => { if (provider === "deepgram") warmTokens.refresh(); }).catch(() => {});
+}
 
 /* Persistent capture graph (mitigation C, owner 2026-09-27): one
  * app-lifetime AudioContext + a module-load memo. Created under the
@@ -382,7 +400,15 @@ export function useDictation({ append, destination = "primary", disabled = false
 	/** Frames captured before the socket is OPEN (mitigation A): flushed in
 	 *  order on open; capped at 256 frames (≈32s) with the oldest dropped;
 	 *  cleared at teardown so a dead run's audio can't leak into the next. */
-	const pendingRef = useRef<ArrayBuffer[]>([]);
+	const pendingRef = useRef<PcmChunk[]>([]);
+	const providerRef = useRef<DictationProvider | null>(null);
+	const languageRef = useRef<DictationLanguage>("en");
+	const recordingRef = useRef<ReturnType<typeof createPcmRecording> | null>(null);
+	const runAbortRef = useRef<AbortController | null>(null);
+	const transcribingRef = useRef(false);
+	const durationRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const flushWaiterRef = useRef<{ resolve: () => void; reject: (error: unknown) => void } | null>(null);
+	const stopRef = useRef<() => void>(() => {});
 	const genRef = useRef(0); // stale-handler guard (dictate pattern)
 	const safetyRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const reconnectsRef = useRef(0);
@@ -405,14 +431,22 @@ export function useDictation({ append, destination = "primary", disabled = false
 	}, []);
 
 	/** Full teardown of one run's machinery. Idempotent; generation-guarded by callers. */
-	const cleanup = useCallback((warmNext = true) => {
+	const cleanup = useCallback((warmNext = true, terminalError?: unknown) => {
 		const endGen = ++genRef.current;
 		let appended: unknown;
 		// A second cleanup (cancel/dispose) cannot turn an unfinished async
 		// append into a successful finish: that would send the old draft.
-		let failure: { error: unknown } | null = appendPendingRef.current
-			? { error: new DOMException("Dictation transcript delivery canceled", "AbortError") }
-			: null;
+		let failure: { error: unknown } | null = terminalError !== undefined ? { error: terminalError }
+			: appendPendingRef.current || transcribingRef.current
+				? { error: new DOMException("Dictation transcript delivery canceled", "AbortError") }
+				: null;
+		transcribingRef.current = false;
+		runAbortRef.current?.abort();
+		runAbortRef.current = null;
+		flushWaiterRef.current?.reject(new DOMException("Dictation canceled", "AbortError"));
+		flushWaiterRef.current = null;
+		recordingRef.current = null;
+		if (durationRef.current) { clearTimeout(durationRef.current); durationRef.current = null; }
 		appendPendingRef.current = false;
 		try {
 			appended = flush(); // exactly one append, after the final transcript
@@ -455,7 +489,7 @@ export function useDictation({ append, destination = "primary", disabled = false
 				if (failed) waiter.reject(failed.error);
 				else waiter.resolve();
 			}
-			if (warmNext) warmTokens.refresh();
+			if (warmNext && providerRef.current === "deepgram") warmConfiguredProvider();
 		};
 		if (appended && typeof (appended as PromiseLike<unknown>).then === "function") {
 			appendPendingRef.current = true;
@@ -549,13 +583,16 @@ export function useDictation({ append, destination = "primary", disabled = false
 		bufferRef.current = []; // fresh run, fresh buffer (round 2)
 		pendingRef.current = []; // fresh run, fresh queue (mitigation A)
 		const gen = ++genRef.current;
+		const controller = new AbortController();
+		runAbortRef.current = controller;
 		let language: DictationLanguage;
+		let provider: DictationProvider | null;
 		try {
-			language = await getLanguage();
+			[language, provider] = await Promise.all([getLanguage(), readDictationProvider(controller.signal)]);
+			if (!provider) throw new Error(DICTATION_KEYLESS);
 		} catch (e) {
 			if (gen !== genRef.current) return;
-			setError(e instanceof Error ? e.message : "Dictation language unavailable");
-			cleanup();
+			cleanup(true, e instanceof Error ? e : new Error("Dictation configuration unavailable"));
 			return;
 		}
 		if (gen !== genRef.current) return;
@@ -566,7 +603,10 @@ export function useDictation({ append, destination = "primary", disabled = false
 		// the token runs concurrently with it. 127.0.0.1 is a secure
 		// context, so getUserMedia works without TLS; macOS TCC prompts on
 		// first use.
-		const tokenPromise = warmTokens.mint();
+		providerRef.current = provider;
+		languageRef.current = language;
+		recordingRef.current = provider === "groq" ? createPcmRecording() : null;
+		const tokenPromise = provider === "deepgram" ? warmTokens.mint() : Promise.resolve("");
 		tokenPromise.catch(() => {}); // surfaced below; no unhandled rejection
 		const micPromise = navigator.mediaDevices.getUserMedia({
 			audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -591,10 +631,18 @@ export function useDictation({ append, destination = "primary", disabled = false
 			workletRef.current = worklet;
 			worklet.port.onmessage = (e) => {
 				if (gen !== genRef.current) return;
-				const msg = e.data as { type: string; rms?: number; buffer?: ArrayBuffer };
+				const msg = e.data as { type: string; rms?: number; buffer?: PcmChunk };
 				if (msg.type === "level") {
 					levelRef.current = msg.rms ?? 0; // never reset to zero (dictate pattern)
+				} else if (msg.type === "flushed") {
+					flushWaiterRef.current?.resolve();
 				} else if (msg.type === "audio") {
+					if (provider === "groq") {
+						try {
+							if (msg.buffer && !recordingRef.current?.append(msg.buffer)) { setError(DICTATION_LIMIT_MESSAGE); stopRef.current(); }
+						} catch (error) { bufferRef.current = []; cleanup(true, error); }
+						return;
+					}
 					const ws = wsRef.current;
 					if (ws && ws.readyState === WebSocket.OPEN) ws.send(msg.buffer!);
 					// Mitigation A: not OPEN yet (handshake or reconnect gap) —
@@ -611,6 +659,13 @@ export function useDictation({ append, destination = "primary", disabled = false
 			// Pull the graph with silence out (the worklet writes no output) —
 			// an unconnected worklet node is never clocked.
 			worklet.connect(ctx.destination);
+			if (provider === "groq") {
+				setPhase("recording");
+				durationRef.current = setTimeout(() => {
+					if (gen !== genRef.current) return;
+					setError(DICTATION_LIMIT_MESSAGE); stopRef.current();
+				}, DICTATION_MAX_SECONDS * 1000);
+			}
 		} catch (e) {
 			if (gen !== genRef.current) return;
 			const msg =
@@ -619,8 +674,7 @@ export function useDictation({ append, destination = "primary", disabled = false
 					: e instanceof Error
 						? e.message
 						: "mic unavailable";
-			setError(msg);
-			cleanup();
+			cleanup(true, new Error(msg));
 			return;
 		}
 		if (gen !== genRef.current) return;
@@ -629,14 +683,13 @@ export function useDictation({ append, destination = "primary", disabled = false
 			token = await tokenPromise;
 		} catch (e) {
 			if (gen !== genRef.current) return;
-			setError(e instanceof Error ? e.message : "token unavailable");
-			cleanup();
+			cleanup(true, e instanceof Error ? e : new Error("token unavailable"));
 			return;
 		}
 		if (gen !== genRef.current) return;
 		// Mitigation B: the handshake fires the moment the graph is live,
 		// overlapping any remaining token wait — mic-gated, never before it.
-		openSocket(gen, token, language);
+		if (provider === "deepgram") openSocket(gen, token, language);
 	}, [openSocket, cleanup, getLanguage, owner, primary, setPhase]);
 
 	const stop = useCallback(() => {
@@ -650,6 +703,47 @@ export function useDictation({ append, destination = "primary", disabled = false
 		streamRef.current = null;
 		sourceRef.current?.disconnect();
 		sourceRef.current = null;
+		if (durationRef.current) { clearTimeout(durationRef.current); durationRef.current = null; }
+		if (providerRef.current === "groq") {
+			const worklet = workletRef.current;
+			if (!worklet || !recordingRef.current) { cleanup(); return; }
+			transcribingRef.current = true;
+			void (async () => {
+				// The worklet owns a partial final frame. Stop its source first,
+				// then wait for all queued audio and its explicit flush acknowledgement.
+				await new Promise<void>((resolve, reject) => {
+					const timer = setTimeout(() => { flushWaiterRef.current = null; reject(new Error("Could not finish microphone capture. Dictation was not submitted.")); }, 1000);
+					const settle = (error?: unknown) => {
+						clearTimeout(timer); flushWaiterRef.current = null;
+						if (error !== undefined) reject(error); else resolve();
+					};
+					flushWaiterRef.current = { resolve: () => settle(), reject: error => settle(error) };
+					try { worklet.port.postMessage({ type: "flush" }); } catch (error) { settle(error); }
+				});
+				if (gen !== genRef.current) return;
+				worklet.disconnect(); workletRef.current = null;
+				const recording = recordingRef.current;
+				if (!recording?.byteLength) { transcribingRef.current = false; cleanup(); return; }
+				if (recording.byteLength < DICTATION_MIN_PCM_BYTES) throw new Error("Dictation recording is too short. Speak for a moment and try again.");
+				const signal = AbortSignal.any([runAbortRef.current!.signal, AbortSignal.timeout(120_000)]);
+				const response = await fetch(`/api/stt/transcribe?language=${encodeURIComponent(languageRef.current)}`, {
+					method: "POST", headers: { "Content-Type": "audio/wav" }, body: recording.wav(), signal,
+				});
+				if (gen !== genRef.current) return;
+				const data = await response.json() as { text?: unknown; message?: unknown };
+				if (gen !== genRef.current) return;
+				if (!response.ok || typeof data.text !== "string") throw new Error(typeof data.message === "string" ? data.message : "Dictation transcription failed. Try again.");
+				const text = data.text.trim();
+				if (text) bufferRef.current.push(text);
+				transcribingRef.current = false;
+				cleanup();
+			})().catch((error: unknown) => {
+				if (gen !== genRef.current) return;
+				bufferRef.current = [];
+				cleanup(true, error);
+			});
+			return;
+		}
 		workletRef.current?.disconnect();
 		workletRef.current = null;
 
@@ -670,6 +764,7 @@ export function useDictation({ append, destination = "primary", disabled = false
 			cleanup();
 		}
 	}, [cleanup, setPhase]);
+	stopRef.current = stop;
 
 	const cancel = useCallback(() => {
 		if (phaseRef.current === "idle") return;
@@ -718,8 +813,10 @@ export function useDictation({ append, destination = "primary", disabled = false
 	// focused plugin control first, otherwise core fallback; Esc always
 	// cancels the actual recording owner rather than the focused widget.
 	useEffect(() => {
-		warmTokens.refresh(); // pre-mint at mount (mitigation D) — silent if keyless
+		warmConfiguredProvider(); // Groq never requests a Deepgram token.
+		const unsubscribe = onSettingsSaved(section => { if (section === "keys") warmConfiguredProvider(); });
 		return () => {
+			unsubscribe();
 			// Navigation cancels capture: invalidate every pending await before
 			// releasing resources, and never append into a different page's input.
 			bufferRef.current = [];
@@ -760,7 +857,7 @@ export function DictationBar({ dictation, disabled = false }: { dictation: Dicta
 	const { phase, error, levelRef, toggle, active, clearError, blocked } = dictation;
 	const { open: openSettings } = useSettingsDialog();
 	/** The keyless click (zero-keys wave, owner dictation trio): the errored
-	 *  idle button deep-links Settings → Keys → the Deepgram row and clears
+	 *  idle button deep-links Settings → Keys → the Groq row and clears
 	 *  the error — the surface is clean when the user returns. Any other
 	 *  error keeps the old behavior (click = retry, which clears). */
 	const keyless = error === DICTATION_KEYLESS;
@@ -818,7 +915,7 @@ export function DictationBar({ dictation, disabled = false }: { dictation: Dicta
 					onClick={() => {
 						if (keyless) {
 							clearError();
-							openSettings("keys", DEEPGRAM_KEY_ID);
+							openSettings("keys", GROQ_KEY_ID);
 						} else {
 							toggle();
 						}
@@ -847,7 +944,7 @@ export function DictationBar({ dictation, disabled = false }: { dictation: Dicta
 					className="flex h-7 shrink-0 items-center gap-1.5 rounded-md bg-destructive/10 px-2 text-xs font-medium text-destructive transition-colors hover:bg-destructive/20"
 				>
 					{phase === "stopping" ? <Loader2Icon className="size-3.5 animate-spin" /> : <MicIcon className="size-3.5" />}
-					Stop
+					{phase === "stopping" ? "Stopping…" : "Stop"}
 				</button>
 			</Hint>
 			<span className="size-1.5 shrink-0 animate-pulse rounded-full bg-destructive" aria-hidden />

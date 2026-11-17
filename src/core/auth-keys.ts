@@ -31,6 +31,12 @@ export interface AuthKeyInfo {
 
 export const AUTH_KEYS: readonly AuthKeyInfo[] = [
 	{
+		id: "GROQ_API_KEY",
+		label: "Groq · Whisper",
+		description: "Dictation with Whisper Large V3 Turbo. Transcribes when you stop recording; preferred over Deepgram when configured. Also used by Groq models.",
+		docsUrl: "https://console.groq.com/keys",
+	},
+	{
 		id: "DEEPGRAM_API_KEY",
 		label: "Deepgram",
 		description: "Speech-to-text key for dictation — needs ≥ Member permission in the Deepgram console to mint tokens.",
@@ -193,6 +199,7 @@ export function validateKeyShape(id: string, rawValue: string): KeyShapeResult {
 			// No public format — a length floor + paste hygiene only.
 			return nonEmpty(20);
 		case "EXA_API_KEY":
+		case "GROQ_API_KEY":
 		case "OLLAMA_API_KEY":
 			// No documented key prefix: use the provider-key paste guard.
 			return nonEmpty(12);

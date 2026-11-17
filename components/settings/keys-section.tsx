@@ -83,6 +83,7 @@ async function readCustomStatus(inspectKey = false): Promise<CustomStatus> {
  *  2026-09-20: the Google CSE pair retired, Tavily + Brave joined) — the
  *  section can never drift from core/auth-keys.ts again. */
 const TOOL_IDS = AUTH_KEYS.map((k) => k.id) as readonly string[];
+const DICTATION_KEY_IDS = new Set(["GROQ_API_KEY", "DEEPGRAM_API_KEY"]);
 
 /** The custom endpoint's synthetic Add-provider entry (offered only while unconfigured). */
 export const CUSTOM_PROVIDER_INFO: ProviderKeyInfo = {
@@ -113,7 +114,7 @@ export function classifyKeys(
 	const providerEnv = new Set((providers ?? []).map((p) => p.envVar));
 	const synth = (id: string): AuthKeyStatus => ({
 		id,
-		info: null,
+		info: AUTH_KEYS.find((key) => key.id === id) ?? null,
 		present: false,
 		masked: null,
 		source: "none",
@@ -137,7 +138,7 @@ export function classifyKeys(
 		providerRows,
 		toolRows: TOOL_IDS.map((id) => byId.get(id) ?? synth(id)),
 		unknownRows,
-		addable: (providers ?? []).filter((p) => !byId.has(p.envVar)),
+		addable: (providers ?? []).filter((p) => !isTool(p.envVar) && !byId.has(p.envVar)),
 	};
 }
 
@@ -581,7 +582,7 @@ export function KeysSection({
 			</SettingsGroup>
 
 			{(["Dictation", "Search"] as const).map((label) => <SettingsGroup key={label} label={label} testid={label === "Dictation" ? "group-dictation" : "group-search"}>
-				{toolRows.filter((status) => label === "Dictation" ? status.id === "DEEPGRAM_API_KEY" : status.id !== "DEEPGRAM_API_KEY").map((status) => (
+				{toolRows.filter((status) => DICTATION_KEY_IDS.has(status.id) === (label === "Dictation")).map((status) => (
 					<KeyTableRow
 						key={status.id}
 						label={status.info?.label ?? status.id}
@@ -603,11 +604,11 @@ export function KeysSection({
 					<DictationLanguageSetting />
 					<p data-testid="dictation-setup-hint" className="px-1 text-[11px] leading-relaxed text-muted-foreground/70">
 						Create a <a
-							href="https://console.deepgram.com/"
+							href="https://console.groq.com/keys"
 							target="_blank"
 							rel="noreferrer"
 							className="underline underline-offset-2 hover:text-foreground"
-						>Deepgram API key</a> with the Member role or higher, then add it above.
+						>Groq API key</a> and add it above. Groq uses Whisper Large V3 Turbo and transcribes when you stop (up to 10 minutes per recording). With no Groq key, Deepgram provides live transcription; its key needs the Member role or higher.
 					</p>
 				</>}
 			</SettingsGroup>)}

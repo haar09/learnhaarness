@@ -72,6 +72,7 @@ async function fixture(language: "pl" | "en" = "pl", delayedRead?: Promise<Respo
 		WebSocket: Socket, AudioContext: AudioGraph, AudioWorkletNode: Worklet,
 		IS_REACT_ACT_ENVIRONMENT: true,
 		fetch: async (url: string, init?: RequestInit) => {
+			if (url === "/api/stt/config") return Response.json({ provider: "deepgram" });
 			if (url === "/api/stt/token") return Response.json({ token: "test-token" });
 			if (url === "/api/settings") {
 				state.reads++;
