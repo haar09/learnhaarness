@@ -429,7 +429,7 @@ const KIND_FILTER_KEY = "lh:session-kind-filter";
 
 function SessionsSidebar() {
 	const interactions = useInteractionLayers();
-	const { open, toggle } = useSidebar();
+	const { open, toggle, closeMobile } = useSidebar();
 	const [chats, setChats] = useState<ChatListItem[] | null>(null);
 	const [query, setQuery] = useState("");
 	const [kindFilter, setKindFilter] = useState<SessionKindFilter>("all");
@@ -444,14 +444,20 @@ function SessionsSidebar() {
 	const pathname = usePathname();
 	const router = useRouter();
 	const { open: openSettings } = useSettingsDialog();
+	// Selecting the current route does not change pathname, so the provider's
+	// route-change effect cannot dismiss the mobile drawer in that case.
+	const navigate = useCallback((href: string) => {
+		closeMobile?.();
+		router.push(href);
+	}, [closeMobile, router]);
 
 	/* New session (owner, 2026-09-13): NO POST — the button opens the
 	   sessionless draft view; the session is created only when the first
 	   message is sent (and that message becomes its title). Search: a
 	   client-side filter over the poll snapshot — no server round trip. */
 	const newSession = useCallback(() => {
-		router.push("/chat/new");
-	}, [router]);
+		navigate("/chat/new");
+	}, [navigate]);
 
 	/* FUZZY (owner round 8, 2026-10-05): subsequence match ranked by
 	 * fuzzyScore — prefix beats word-boundary beats scattered. Empty query
@@ -706,6 +712,7 @@ function SessionsSidebar() {
 					>
 						<Link
 							href="/"
+							onClick={closeMobile}
 							aria-label="Home"
 							className="lh-no-drag flex size-9 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50"
 						>
@@ -742,7 +749,7 @@ function SessionsSidebar() {
 						type="button"
 						data-testid="new-session-practice"
 						title="Practice"
-						onClick={() => router.push("/chat/new?mode=practice")}
+						onClick={() => navigate("/chat/new?mode=practice")}
 						className="flex min-w-0 w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-xs uppercase tracking-wider text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
 					>
 						<DumbbellIcon className="size-3 shrink-0" />
@@ -800,7 +807,7 @@ function SessionsSidebar() {
 									const target = shown![kbdIndex !== null && kbdIndex < n ? kbdIndex : 0];
 									if (!target) return;
 									e.preventDefault();
-									router.push(`/chat/${target.id}`);
+									navigate(`/chat/${target.id}`);
 									setKbdIndex(null);
 									e.currentTarget.blur();
 								}
@@ -864,7 +871,7 @@ function SessionsSidebar() {
 									kbdSelected={i === kbdIndex}
 									onOpen={() => {
 										setKbdIndex(null);
-										router.push(`/chat/${c.id}`);
+										navigate(`/chat/${c.id}`);
 									}}
 									onContextMenu={(e) => openContext(e, c)}
 								/>
