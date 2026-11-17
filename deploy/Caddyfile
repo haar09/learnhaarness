@@ -9,18 +9,28 @@
  }
  handle {
   route {
-   basicauth {
-    import /etc/caddy/learnharness-users.caddy
+   @login path /login /api/auth/verify
+   handle @login {
+    reverse_proxy 127.0.0.1:3000 {
+     header_up X-Forwarded-Proto https
+     header_up -Authorization
+    }
    }
-   @oauth path /connect-chatgpt /connect-chatgpt/*
-   reverse_proxy @oauth 127.0.0.1:3001 {
-    header_up X-Forwarded-Proto https
-    header_up -Authorization
-   }
-   reverse_proxy 127.0.0.1:3000 {
-    header_up X-Forwarded-Proto https
-    header_up -Authorization
-    flush_interval -1
+   handle {
+    forward_auth 127.0.0.1:3000 {
+     uri /api/auth/verify
+     header_up X-Forwarded-Proto https
+    }
+    @oauth path /connect-chatgpt /connect-chatgpt/*
+    reverse_proxy @oauth 127.0.0.1:3001 {
+     header_up X-Forwarded-Proto https
+     header_up -Authorization
+    }
+    reverse_proxy 127.0.0.1:3000 {
+     header_up X-Forwarded-Proto https
+     header_up -Authorization
+     flush_interval -1
+    }
    }
   }
  }

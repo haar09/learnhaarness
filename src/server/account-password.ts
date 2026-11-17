@@ -1,4 +1,5 @@
-import { createConnection } from "node:net";
+import { passwordHelper } from "./password-client.ts";
+import { sessionAuthEnabled, clearSessionCookie } from "./session-auth.ts";
 
 const MAX_BODY = 4096;
 export async function accountPasswordResponse(request: Request): Promise<Response> {
@@ -22,14 +23,8 @@ export async function accountPasswordResponse(request: Request): Promise<Respons
  const { currentPassword, newPassword, confirmPassword } = data as Record<string, unknown>;
  if (typeof currentPassword !== "string" || typeof newPassword !== "string" || typeof confirmPassword !== "string" || Buffer.byteLength(currentPassword) > 72 || Buffer.byteLength(newPassword) > 72 || newPassword.length < 12 || newPassword !== confirmPassword || !currentPassword || /\0/.test(currentPassword + newPassword)) return reply(400, "Enter your current password and matching new passwords (12 characters minimum, 72 bytes maximum).");
  try {
-  const result = await new Promise<{ status: number; error?: string }>((resolve, reject) => {
-   const socket = createConnection(process.env.LH_PASSWORD_SOCKET!); let response = "";
-   socket.setTimeout(60000, () => socket.destroy(new Error("timeout")));
-   socket.on("connect", () => socket.end(JSON.stringify({ currentPassword, newPassword, confirmPassword }) + "\n"));
-   socket.on("data", chunk => { response += chunk.toString(); if (response.length > 4096) socket.destroy(new Error("oversize")); });
-   socket.on("error", reject); socket.on("end", () => { try { resolve(JSON.parse(response)); } catch { reject(new Error("invalid response")); } });
-  });
-  if (result.status === 200) return Response.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
+  const result = await passwordHelper({ op: "change", currentPassword, newPassword, confirmPassword });
+  if (result.status === 200) return Response.json({ ok: true, signInRequired: sessionAuthEnabled() }, { headers: { "Cache-Control": "no-store", ...(sessionAuthEnabled() ? { "Set-Cookie": clearSessionCookie() } : {}) } });
   if ([400, 403, 429].includes(result.status)) return reply(result.status, result.status === 403 ? "Current password is incorrect." : result.status === 429 ? "Too many attempts. Try again in 15 minutes." : "Invalid password request.");
  } catch { /* Never log request contents or helper errors. */ }
  return reply(503, "Could not change the password. Please try again later.");
