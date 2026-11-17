@@ -29,8 +29,8 @@ import { isInteractionScopeEligible } from "@/components/plugin-input-focus";
 import { InteractionLayersProvider, useInteractionLayers, useOptionalInteractionLayers } from "@/components/interaction-layers";
 
 /**
- * Toggleable sidebar — NOT a modal drawer: no backdrop, no focus theft. It
- * sits inline next to the content and can stay open while working in a
+ * Desktop sidebar sits inline; narrow browser windows use an overlay drawer
+ * so opening navigation never squeezes the conversation. It can stay open in a
  * session. Open state persists across pages (provider lives in the root
  * layout) and across reloads (localStorage).
  */
@@ -48,8 +48,8 @@ const STORAGE_KEY = "lh:sidebar-open";
  * preference. Opening the sidebar while narrow asks the Electron shell to
  * widen the window to the threshold (window.lh.expandWindow, IPC in
  * electron/main.cjs) — the resize listener flips `narrow` and the sidebar
- * appears. In the plain browser there is no window to widen and no
- * suppression — a narrow tab opens the sidebar if the user says so.
+ * appears. Narrow browser tabs use a separate, initially closed drawer state, leaving
+ * the persisted desktop preference untouched.
  *
  * Mirrors SIDEBAR_AUTOCLOSE in electron/main.cjs — keep in sync.
  */
@@ -95,7 +95,7 @@ declare global {
 	}
 }
 
-const SidebarContext = createContext<{ open: boolean; toggle: () => void }>({
+const SidebarContext = createContext<{ open: boolean; mobile?: boolean; closeMobile?: () => void; toggle: () => void }>({
 	open: false,
 	toggle: () => {},
 });
@@ -116,6 +116,11 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 	// mismatch); the stored value is applied after mount.
 	const [open, setOpen] = useState(false);
 	const [narrow, setNarrow] = useState(false);
+	const [mobile, setMobile] = useState(false);
+	const [mobileOpen, setMobileOpen] = useState(false);
+	const pathname = usePathname();
+	const closeMobile = useCallback(() => setMobileOpen(false), []);
+	useEffect(() => { closeMobile(); }, [pathname, closeMobile]);
 	const [mounted, setMounted] = useState(false);
 
 	useEffect(() => {
@@ -151,14 +156,20 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 	// Both this and the mount effect land before the first paint, so a
 	// narrow window never flashes the open sidebar on load.
 	useEffect(() => {
-		if (!IS_ELECTRON) return; // plain-browser tabs open freely
-		const onResize = () => setNarrow(window.innerWidth < SIDEBAR_AUTOCLOSE);
+		const viewport = window.matchMedia(`(max-width: ${SIDEBAR_AUTOCLOSE - 1}px)`);
+		const onResize = () => {
+			const small = viewport.matches;
+			setNarrow(IS_ELECTRON && small);
+			setMobile(!IS_ELECTRON && small);
+			setMobileOpen(false);
+		};
 		onResize();
-		window.addEventListener("resize", onResize);
-		return () => window.removeEventListener("resize", onResize);
+		viewport.addEventListener("change", onResize);
+		return () => viewport.removeEventListener("change", onResize);
 	}, []);
 
 	const toggle = useCallback(() => {
+		if (mobile) { setMobileOpen(value => !value); return; }
 		// Opening while narrow (auto-closed, or the user's own closed-at-
 		// narrow): ask the shell to widen to the threshold — the resize
 		// listener flips `narrow` and the sidebar appears. The preference
@@ -174,7 +185,18 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 			localStorage.setItem(STORAGE_KEY, v ? "0" : "1");
 			return !v;
 		});
-	}, [narrow, open]);
+	}, [mobile, narrow, open]);
+
+	useEffect(() => {
+		if (!mobile || !mobileOpen) return;
+		const previous = document.activeElement as HTMLElement | null;
+		document.querySelector<HTMLButtonElement>('[aria-label="Close sidebar"]')?.focus();
+		const onKey = (event: KeyboardEvent) => {
+			if (event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); closeMobile(); }
+		};
+		window.addEventListener("keydown", onKey);
+		return () => { window.removeEventListener("keydown", onKey); if (previous?.isConnected) previous.focus(); };
+	}, [mobile, mobileOpen, closeMobile]);
 
 	// ⌘B: the global shortcut dispatches kbdEventForAction("toggle-sidebar")
 	// and the context answers on exactly that name — the shared spelling
@@ -190,9 +212,9 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 	}, [toggle]);
 
 	return (
-		<SidebarContext.Provider value={{ open: open && !narrow, toggle }}>
+		<SidebarContext.Provider value={{ open: mobile ? mobileOpen : open && !narrow, mobile, closeMobile, toggle }}>
 			{/* transitions gated on mount: no slide-in flash on page load */}
-			<div className={cn("flex h-dvh", mounted && "[&_.sidebar-motion]:transition-[width,margin,opacity]")}>{children}</div>
+			<div className={cn("lh-app-frame relative flex h-dvh w-full min-w-0 overflow-hidden", mounted && "[&_.sidebar-motion]:transition-[width,margin,opacity]")}>{children}</div>
 		</SidebarContext.Provider>
 	);
 }
@@ -223,6 +245,8 @@ export function SidebarToggle() {
 				variant="ghost"
 				size="icon"
 				aria-label="Open sidebar"
+				aria-controls="session-sidebar"
+				aria-expanded={open}
 				aria-hidden={open}
 				tabIndex={open ? -1 : 0}
 				onClick={toggle}
@@ -654,10 +678,12 @@ function SessionsSidebar() {
 
 	return (
 		<aside
-			className={cn("sidebar-motion shrink-0 overflow-hidden duration-200", open ? "w-72" : "w-0")}
+			id="session-sidebar"
+			className={cn("lh-sidebar sidebar-motion shrink-0 overflow-hidden duration-200", open ? "w-72" : "w-0")}
 			aria-hidden={!open}
+			inert={!open}
 		>
-			<div className="flex h-full w-72 flex-col border-r bg-background">
+			<div className="lh-sidebar-inner flex h-full w-72 flex-col border-r bg-background">
 				{/* LH wordmark — the owner's header; close toggle sits at the edge.
 				    Merged chrome (2026-09-17): in Electron this band is the
 				    window's drag surface and starts after the traffic lights
@@ -955,12 +981,15 @@ function SessionsSidebar() {
 export function AppShell({ children }: { children: React.ReactNode }) {
 	const [contentRoot, setContentRoot] = useState<HTMLElement | null>(null);
 	const pathname = usePathname();
+	const { open, mobile, closeMobile } = useSidebar();
+	useEffect(() => { if (contentRoot) contentRoot.inert = Boolean(mobile && open); }, [contentRoot, mobile, open]);
 	return (
 		<HostRouteLifetimeProvider pathname={pathname}>
 		<HostContentRootContext.Provider value={contentRoot}>
 			<InteractionLayersProvider><SettingsDialogProvider>
 				<SessionsSidebar />
-				<FilePathDropZone className="relative isolate min-w-0 flex-1" onContentRoot={setContentRoot}>{children}</FilePathDropZone>
+				{mobile && open && <button type="button" className="lh-sidebar-backdrop fixed inset-0 z-30 bg-black/40" aria-label="Dismiss sidebar" onClick={closeMobile} />}
+				<FilePathDropZone className="relative isolate z-0 min-w-0 flex-1" onContentRoot={setContentRoot}>{children}</FilePathDropZone>
 				{/* The single document-level keydown listener (keyboard wave A) —
 				    after the content in the tree, but it's window-level so order only
 				    matters for the events it dispatches, never for DOM priority. */}

@@ -519,6 +519,31 @@ body {
 .lh-electron .lh-no-drag {
 	-webkit-app-region: no-drag;
 }
+
+/* Browser navigation overlays narrow screens instead of taking 288px from
+   the chat. The content pane has its own z-0 stacking context, so graph
+   controls cannot paint over the drawer or intercept its close button. */
+@media (max-width: 927px) {
+	html:not(.lh-electron) .lh-sidebar {
+		position: absolute;
+		inset: 0 auto 0 0;
+		z-index: 40;
+		max-width: calc(100vw - 3rem);
+	}
+	html:not(.lh-electron) .lh-sidebar-inner {
+		max-width: calc(100vw - 3rem);
+		padding-bottom: env(safe-area-inset-bottom, 0px);
+	}
+	html:not(.lh-electron) .lh-graph-toolbar > div:first-child {
+		max-width: 100%;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+	}
+	html:not(.lh-electron) .lh-sidebar button[aria-label="Close sidebar"] {
+		min-width: 44px;
+		min-height: 44px;
+	}
+}
 /* THE AUTO CARVE-OUT (owner standardization ruling, 2026-09-29 night):
    inside a drag band, every NATIVE interactive element is automatically
    a no-drag island — "draggable anywhere that is not a clickable
