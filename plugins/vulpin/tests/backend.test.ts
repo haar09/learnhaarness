@@ -11,6 +11,8 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "lh-vulpin-test-"));
 const token = "synthetic-test-credential-never-real";
 const seen: { url: string; body?: unknown }[] = [];
 let deny = false, stall = false, oversized = false, mismatched = false, incomplete = false, management = false, baseUrl = "";
+let previewAvailable = true;
+const version = "a".repeat(64);
 const server = http.createServer(async (req, res) => {
   let body = ""; for await (const chunk of req) body += chunk;
   seen.push({ url: req.url!, body: body ? JSON.parse(body) : undefined });
@@ -21,6 +23,12 @@ const server = http.createServer(async (req, res) => {
   if (route === "status") res.end(JSON.stringify({ account: { id: "account-1", email: "learner@example.com" } }));
   else if (route.startsWith("files")) res.end(JSON.stringify({ files: [{ id: "file-1", title: "Geometry", preparedAvailable: true }, { id: "unprepared", preparedAvailable: false }], nextCursor: "file-2" }));
   else if (route === "search") res.end(JSON.stringify({ results: [{ fileId: "file-1", pageRef: "page-7", pageNumber: 7, snippet: "Triangle theorem" }], coverage: { partial: true } }));
+  else if (route === "outline" && previewAvailable) res.end(JSON.stringify({ folders: [{ folderId: "section-1", path: ["Geometry"] }], files: [], nextCursor: null }));
+  else if (route === "briefs" && previewAvailable) {
+    const input = JSON.parse(body);
+    const pages = Array.from({ length: input.limit }, (_, index) => ({ fileId: "file-1", sourceVersion: version, noteTitle: "Geometry", path: ["Geometry"], notePrepared: true, status: "ready", pageNumber: 7 + index, descriptor: { title: "Triangles", searchText: "Triangle theorem\nÜbung 🙂", unreadableAreas: [] } }));
+    res.end(JSON.stringify({ pages, coverage: { partial: true }, nextCursor: "cursor-2" }));
+  }
   else if (route === "read" && oversized) res.end(JSON.stringify({ pages: [], padding: "x".repeat(24 * 1024 * 1024) }));
   else if (route === "read" && JSON.parse(body).fileId === "unprepared") { res.writeHead(409); res.end('{"error":"source_unavailable"}'); }
   else if (route === "read" && incomplete) res.end(JSON.stringify({pages:[]}));
@@ -52,11 +60,53 @@ test("private connection survives restart and all agents receive tools without s
   assert.equal(JSON.parse(fs.readFileSync(filename, "utf8")).token, token);
   assert.deepEqual(h.instructions[0]!.agents, ["prober", "teacher", "practice"]);
   assert.match(h.instructions[0]!.text, /descriptors.*never evidence/i);
-  assert.deepEqual(h.tools().map(tool => tool.name), ["vulpin_list_files", "vulpin_search", "vulpin_read_pages"]);
+  assert.deepEqual(h.tools().map(tool => tool.name), ["vulpin_list_files", "vulpin_search", "vulpin_read_pages", "vulpin_list_outline", "vulpin_read_briefs"]);
   h.dispose(); const next = host(directory);
   assert.equal((await next.call("status") as { connected: boolean }).connected, true);
   await next.call("disconnect"); assert.equal(fs.existsSync(filename), false);
   await assert.rejects(() => next.tools()[0]!.execute("call", {}), /disconnected/); next.dispose();
+});
+test("discovers sections, previews existing headings in text, and opens an exact source version", async () => {
+  const h = host(path.join(root, "previews"));
+  try {
+    await h.call("connect", { baseUrl, token });
+    const [, , read, outline, briefs] = h.tools();
+    const found = await outline!.execute("outline", {});
+    assert.deepEqual(found.details, { folders: [{ folderId: "section-1", path: ["Geometry"] }], files: [], nextCursor: null });
+    const preview = await briefs!.execute("briefs", { folderId: "section-1", limit: 1 });
+    assert.deepEqual(preview.content.map(part => part.type), ["text"]);
+    assert.match(JSON.stringify(preview.details), /Triangles.*Übung/);
+    assert.deepEqual(seen.at(-1)!.body, { folderId: "section-1", limit: 1, maxBytes: 256 * 1024 });
+    await briefs!.execute("briefs", { folderId: "section-1", cursor: "cursor-2", limit: 1 });
+    assert.match(JSON.stringify(seen.at(-1)!.body), /cursor-2/);
+    const page = await read!.execute("read", { fileId: "file-1", pages: [7], expectedVersion: version });
+    assert.equal(page.content.some(part => part.type === "image"), true);
+    await assert.rejects(() => briefs!.execute("bad", { fileId: "file-1" }), /sourceVersion/);
+    await assert.rejects(() => briefs!.execute("bad", { folderId: "section-1", fileId: "file-1", sourceVersion: version }), /either/);
+  } finally { h.dispose(); }
+});
+test("serializes concurrent brief requests and enforces the turn budget", async () => {
+  const h = host(path.join(root, "preview-budget"));
+  try {
+    await h.call("connect", { baseUrl, token });
+    const briefs = h.tools()[4]!;
+    const input = { fileId: "file-1", sourceVersion: version, limit: 50 };
+    const requests = await Promise.allSettled(Array.from({ length: 5 }, () => briefs.execute("briefs", input)));
+    assert.deepEqual(requests.map(result => result.status), ["fulfilled", "fulfilled", "fulfilled", "fulfilled", "rejected"]);
+    assert.match(String((requests[4] as PromiseRejectedResult).reason), /limit.*turn/i);
+    assert.equal((await h.tools()[4]!.execute("new turn", { ...input, limit: 1 })).content[0]!.type, "text");
+  } finally { h.dispose(); }
+});
+test("an older Vulpin server reports unavailable previews while existing search still works", async () => {
+  const h = host(path.join(root, "older-server"));
+  previewAvailable = false;
+  try {
+    await h.call("connect", { baseUrl, token });
+    const [, search, , outline, briefs] = h.tools();
+    await assert.rejects(() => outline!.execute("outline", {}), /server does not support.*preview/i);
+    await assert.rejects(() => briefs!.execute("briefs", { fileId: "file-1", sourceVersion: version }), /server does not support.*preview/i);
+    assert.match(JSON.stringify((await search!.execute("search", { queries: ["Triangles"] })).details), /Triangle theorem/);
+  } finally { previewAvailable = true; h.dispose(); }
 });
 test("lazy remote list/search and native page images preserve citations and avoid duplicate image details", async () => {
   const h = host(path.join(root, "tools")); await h.call("connect", { baseUrl, token });

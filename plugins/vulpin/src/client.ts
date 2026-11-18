@@ -17,8 +17,13 @@ export async function request(config: Connection, route: string, body: unknown, 
   if (!response.ok) {
     await response.body?.cancel();
     if (response.status === 401 || response.status === 403) throw new Error("Vulpin access denied. Reconnect in Settings → Vulpin or choose an accessible source.");
-    if (response.status === 404) throw new Error("Vulpin source or connector endpoint was not found.");
+    if (response.status === 404) {
+      if (route === "outline" || route === "briefs") throw new Error("This Vulpin server does not support page previews. File discovery, search and page images are still available.");
+      throw new Error("Vulpin source or connector endpoint was not found.");
+    }
+    if (response.status === 409 && route === "briefs") throw new Error("The Vulpin preview source is unavailable or changed. Refresh the outline or file version and restart the preview.");
     if (response.status === 409) throw new Error("Vulpin source pages are not prepared, no longer accessible, or changed since the previous batch. Refresh source descriptors/version before continuing or prepare this file in Vulpin.");
+    if (response.status === 413 && route === "briefs") throw new Error("The next Vulpin preview does not fit the remaining turn budget. Continue in a new turn.");
     if (response.status === 429) throw new Error("Vulpin is busy. Retry later with a smaller request.");
     throw new Error(`Vulpin request failed (HTTP ${response.status}).`);
   }
@@ -31,7 +36,7 @@ export async function request(config: Connection, route: string, body: unknown, 
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > MAX_RESPONSE_BYTES) throw new Error("Vulpin response is too large. Request fewer pages or results.");
+      if (size > (route === "briefs" ? 256 * 1024 : MAX_RESPONSE_BYTES)) throw new Error("Vulpin response is too large. Request fewer pages or results.");
       chunks.push(value);
     }
   } finally { await reader.cancel(); }

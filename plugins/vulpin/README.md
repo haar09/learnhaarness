@@ -1,7 +1,8 @@
 # Vulpin connector for LearnHarness
 
-A Community plugin for LearnHarness 0.6.1+. Adds `vulpin_list_files`,
-`vulpin_search`, and `vulpin_read_pages` to prober, teacher and practice agents.
+A Community plugin for LearnHarness 0.6.1+. Gives prober, teacher and practice
+agents access to Vulpin file discovery, note outlines, text previews, search,
+and prepared page images.
 The plugin searches Vulpin's existing lexical/vector index and reads prepared
 page images as native vision content. It creates no local index, inventory or
 background synchronization. File descriptors and search snippets are leads;
@@ -58,6 +59,16 @@ needs a smaller prepared version from Vulpin.
   include `id,title,pageCount,access,processing,indexing,originalAvailable,
   preparedAvailable,sourceVersion`. Own/shared/management policies and identity
   redactions are enforced remotely. Listing is lazy and does not fetch documents.
+- `POST outline`: `{folderId?,cursor?,limit:1–50}`. Lists accessible section
+  paths or the selected section's notes, including titles and source versions.
+- `POST briefs`: `{folderId,cursor?,limit,maxBytes}` or
+  `{fileId,sourceVersion,cursor?,limit,maxBytes}`. Returns existing indexed
+  page headings, short contents and unreadable regions for up to 50 entries,
+  plus coverage and a continuation. Follow the cursor with the same scope,
+  including after an empty batch. The plugin limits previews to 200 entries and
+  256 KiB of tool output per turn. Ready entries can be opened with `fileId`,
+  `pageNumber` and `sourceVersion` as `expectedVersion`. Older servers may only
+  support file discovery, search and images.
 - `POST search`: `{queries:[1–3 strings],courseId?,limit:1–6}` returns
   `{results,coverage}` with file IDs, pageRefs, page numbers and snippets.
   Coverage can be partial; no hits do not prove there is no matching content.
