@@ -222,13 +222,41 @@ function warmConfiguredProvider() {
  * (source, worklet) disconnect at teardown instead. */
 let sharedCtx: AudioContext | null = null;
 let workletModule: Promise<void> | null = null;
+const PCM_WORKLET_URL = "/worklets/pcm-capture.js";
+
+async function loadPcmWorklet(worklet: AudioWorklet): Promise<void> {
+	try {
+		await worklet.addModule(PCM_WORKLET_URL);
+		return;
+	} catch {
+		// The hosted asset requires a session. If the browser rejects its
+		// worklet request, retry through the page's authenticated fetch.
+	}
+
+	const response = await fetch(PCM_WORKLET_URL, {
+		mode: "same-origin",
+		credentials: "same-origin",
+		redirect: "error",
+		cache: "no-store",
+	});
+	const type = response.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase();
+	if (!response.ok || (type !== "application/javascript" && type !== "text/javascript")) {
+		throw new Error(`Unexpected dictation audio module response (${response.status})`);
+	}
+	const moduleUrl = URL.createObjectURL(await response.blob());
+	try {
+		await worklet.addModule(moduleUrl);
+	} finally {
+		URL.revokeObjectURL(moduleUrl);
+	}
+}
 
 function ensureAudioGraph(): { ctx: AudioContext; module: Promise<void> } {
 	if (!sharedCtx) sharedCtx = new AudioContext({ sampleRate: 16000 });
 	if (!workletModule) {
-		workletModule = sharedCtx.audioWorklet.addModule("/worklets/pcm-capture.js").catch((e: unknown) => {
+		workletModule = loadPcmWorklet(sharedCtx.audioWorklet).catch((cause: unknown) => {
 			workletModule = null; // failed load: retry next run
-			throw e;
+			throw new Error("Could not load the dictation audio module. Refresh the page and try again.", { cause });
 		});
 	}
 	return { ctx: sharedCtx, module: workletModule };
