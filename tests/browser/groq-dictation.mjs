@@ -8,6 +8,18 @@ const browser = await puppeteer.launch({ executablePath: process.env.CHROMIUM_PA
 try {
 	const page = await browser.newPage();
 	await page.setViewport({ width: 412, height: 860, isMobile: true, hasTouch: true });
+	let workletDenied = 0, workletFetches = 0;
+	await page.setRequestInterception(true);
+	page.on('request', request => {
+		if (new URL(request.url()).pathname === '/worklets/pcm-capture.js') {
+			if (request.resourceType() !== 'fetch') {
+				workletDenied++;
+				return request.respond({ status: 401, contentType: 'application/json', body: '{"error":"Sign in is required."}' });
+			}
+			workletFetches++;
+		}
+		return request.continue();
+	});
 	await page.evaluateOnNewDocument(() => {
 		const original = window.fetch.bind(window);
 		window.dictationTest = { provider: 'groq', uploads: [], tracks: [], tokenCalls: 0, status: 200 };
@@ -69,5 +81,7 @@ try {
 	await page.click('[data-testid="dictation-toggle"]');
 	await page.waitForSelector('[data-testid="key-groq_api_key"]');
 	assert.match(await page.$eval('[data-testid="group-dictation"]', el => el.textContent), /Groq.*Whisper/s);
-	console.log('PASS: mobile-width real microphone + worklet → WAV, stop/append once, cancel, provider failure, Groq settings deep-link. Provider mocked; no paid requests.');
+	assert.equal(workletDenied, 1);
+	assert.equal(workletFetches, 1, 'Recording reuses the worklet loaded through the page fetch');
+	console.log('PASS: microphone and WAV capture after worklet HTTP 401, stop/append once, cancel, provider failure, Groq settings deep-link. Groq responses mocked.');
 } finally { await browser.close(); }
