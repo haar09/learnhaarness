@@ -44,9 +44,19 @@ try {
   const composer = await page.$('[contenteditable="true"], textarea');
   assert.ok(composer && (await composer.boundingBox()).width >= Math.min(width, 736)-160, 'Composer retains a usable width');
  }
- const created = await page.evaluate(async()=>{const r=await fetch('/api/chats',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:'Mobile layout verification'})});if(!r.ok)throw new Error('chat fixture creation');return r.json();});
+ const { chatId, folderId } = await page.evaluate(async () => {
+  const post = async (path, data) => {
+   const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+   if (!response.ok) throw new Error(`Fixture request failed for ${path} (${response.status})`);
+   return response.json();
+  };
+  const { id: chatId } = await post('/api/chats', { title: 'Mobile layout verification' });
+  const { createdFolderId: folderId } = await post('/api/graph/sources', { action: 'create-folder', name: 'Mobile test folder', parentId: null });
+  await post('/api/graph/sources', { action: 'move', kind: 'source', id: chatId, parentId: folderId });
+  return { chatId, folderId };
+ });
  await page.setViewport({width:412,height:860,isMobile:true,hasTouch:true});
- await page.goto(`${url}/chat/${created.id}`,{waitUntil:'networkidle2',timeout:180000});
+ await page.goto(`${url}/chat/${chatId}`,{waitUntil:'networkidle2',timeout:180000});
  await waitClosed(); await checkWidth(412);
  await page.click('[aria-label="Open sidebar"]');
  await page.waitForFunction(()=>document.querySelector('#session-sidebar')?.getBoundingClientRect().width >= 270);
@@ -55,11 +65,21 @@ try {
  await page.screenshot({path:'/tmp/lh-mobile-chat.png'});
  await page.click('[aria-label="Open sidebar"]');
  await page.waitForFunction(()=>document.querySelector('#session-sidebar')?.getBoundingClientRect().width >= 270);
+ const folder = `[data-testid="sidebar-folder-${folderId}"]`;
+ const session = `[data-testid="sidebar-folder-branch-${folderId}"] button[data-session-id="${chatId}"]`;
+ await page.waitForSelector(folder, { visible: true });
+ await page.click(folder);
+ await page.waitForSelector(session, { visible: true });
+ await page.click(session);
+ await waitClosed();
+ assert.equal(new URL(page.url()).pathname, `/chat/${chatId}`, 'Selecting the current session closes the drawer without leaving the chat');
+ await page.click('[aria-label="Open sidebar"]');
+ await page.waitForFunction(() => document.querySelector('#session-sidebar')?.getBoundingClientRect().width >= 270);
  await page.click('#session-sidebar a[aria-label="Home"]');
  await page.waitForFunction(()=>location.pathname === '/'); await waitClosed();
  await page.setViewport({width:1280,height:900});
  await page.waitForFunction(()=>document.querySelector('#session-sidebar')?.getBoundingClientRect().width === 288);
  assert.equal(await page.$eval('[data-testid="file-path-drop-zone"]',e=>e.getBoundingClientRect().width), 992, 'Desktop sidebar remains inline');
  await page.click('[aria-label="Close sidebar"]'); await waitClosed();
- console.log('PASS: 320/360/412/768px home, overlay hit-testing/close/backdrop/Escape, mobile chat, 1280px desktop.');
+ console.log('PASS: 320/360/412/768px home, overlay hit-testing/close/backdrop/Escape, mobile chat and current session in a folder, 1280px desktop.');
 } finally { await browser.close(); }
